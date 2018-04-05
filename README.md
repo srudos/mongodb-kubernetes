@@ -45,6 +45,7 @@ kubectl -f mongo-statefulset.yaml
 kubectl scale sts mongo -n logging --replicas=3
 
 # Attach to the primary MongoDB node
+kubectl exec -n logging -it mongo-0 -c mongo bash
 
 # Run Mongo client
 root@mongo-0:/# mongo
@@ -69,6 +70,12 @@ rs0:PRIMARY>
 # Check replica set membership
 rs0:PRIMARY> rs.status().members.length
 3
+rs0:PRIMARY> db.isMaster().hosts
+[
+        "mongo-0.mongo-svc:27017",
+        "mongo-1.mongo-svc:27017",
+        "mongo-2.mongo-svc:27017"
+]
 rs0:PRIMARY>
 ```
 
@@ -80,6 +87,7 @@ kubectl scale sts mongo -n logging --replicas=2
 # Check replica set membership
 rs0:PRIMARY> rs.status().members.length
 2
+rs0:PRIMARY> db.isMaster().hosts
+[ "mongo-0.mongo-svc:27017", "mongo-1.mongo-svc:27017" ]
 rs0:PRIMARY>
 ```
-
