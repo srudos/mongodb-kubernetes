@@ -80,5 +80,6 @@ kubectl scale sts mongo -n logging --replicas=2
 # Check replica set membership
 rs0:PRIMARY> rs.status().members.length
 2
+rs0:PRIMARY>
 ```
 
