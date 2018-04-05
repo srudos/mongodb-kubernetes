@@ -1,0 +1,228 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-master-tracker-pvc
+  namespace: logging
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: mongodb-storage
+  resources:
+    requests:
+      storage: 1Ki
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-svc
+  namespace: logging
+  labels:
+    name: mongo
+spec:
+  clusterIP: None
+  ports:
+  - name: headless
+    port: 27017
+    targetPort: 27017
+  selector:
+    component: mongo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongo
+  namespace: logging
+  labels:
+    component: mongo
+data:
+  mongod.conf: |
+    # mongod.conf
+
+    # for documentation of all options, see:
+    #   http://docs.mongodb.org/manual/reference/configuration-options/
+
+    # Where and how to store data.
+    storage:
+      dbPath: /var/lib/mongodb
+      journal:
+        enabled: true
+    #  engine:
+    #  mmapv1:
+    #  wiredTiger:
+
+    # where to write logging data.
+    systemLog:
+      destination: file
+      logAppend: true
+      path: /var/log/mongodb/mongod.log
+
+    # network interfaces
+    net:
+      port: 27017
+      bindIp: 0.0.0.0
+
+ 
+    # how the process runs
+    processManagement:
+      timeZoneInfo: /usr/share/zoneinfo
+
+    #security:
+
+    #operationProfiling:
+
+    replication:
+      replSetName: rs0
+
+    #sharding:
+
+    ## Enterprise-Only Options:
+
+    #auditLog:
+
+    #snmp:
+---
+apiVersion: apps/v1beta2
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: logging
+  labels:
+    component: mongo
+spec:
+  selector:
+    matchLabels:
+      component: mongo
+  updateStrategy:
+    type: RollingUpdate
+  serviceName: "mongo-svc"
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        component: mongo
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: mongo
+          image: mongo
+          imagePullPolicy: IfNotPresent
+          command:
+            - mongod
+            - "--replSet"
+            - "rs0"
+            - "--bind_ip"
+            - "0.0.0.0"
+          ports:
+            - containerPort: 27017
+          volumeMounts:
+            - name: config-map
+              mountPath: /etc/mongod.conf
+              subPath: mongod.conf
+            - name: mongo-persistent-storage
+              mountPath: /data/db
+            - name: tmp
+              mountPath: /tmp/mongo
+
+          # Remove self from replSet before going down
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - bash
+                  - "-c"
+                  - |
+                    masterNode=$(mongo --quiet --eval "db.isMaster().primary")
+                    if [[ ${masterNode%%.*} != $HOSTNAME ]]; then
+                      echo "==> Connecting to MongoDB Master and remove self from replSet..." >> /tmp/mongo/preStopHook.out
+                      mongo $masterNode --quiet --eval "rs.remove(\"$HOSTNAME.mongo-svc:27017\")" >> /tmp/mongo/preStopHook.out
+                    fi
+
+        - name: mongo-sidecar
+          image: mongo
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - "-c"
+            - |
+              # Allow sufficient time for MongoDB to come up
+              sleep 10
+              # If no Primary designation, set self Primary
+              if [ ! -f /tmp/mongo-tracker/master ]; then
+                echo "==> Running rs.initiate()..." >> /tmp/mongo/mongoCmd.out
+                mongo --quiet --eval "rs.initiate()" >> /tmp/mongo/mongoCmd.out
+                echo "$HOSTNAME" > /tmp/mongo-tracker/master
+              else
+                if [[ ${HOSTNAME##*-} == 0 ]]; then
+                  echo "==> Running rs.initiate()..." >> /tmp/mongo/mongoCmd.out
+                  mongo --quiet --eval "rs.initiate()" >> /tmp/mongo/mongoCmd.out
+                fi
+              fi
+
+              cat << EOF > /tmp/mongo/mongoReplSetCleanup.js
+              var members = rs.status().members;
+              for (var i=0; i<members.length; ++i) {
+                if (members[i].health != 1) {
+                  rs.remove(members[i].name)
+                }
+              }
+              EOF
+
+              while true; do
+                if [[ $(mongo --quiet --eval "db.isMaster().ismaster") == true ]]; then
+                  # If Primary, clean up replSet membership
+                  mongo /tmp/mongo/mongoReplSetCleanup.js 
+
+                  # If Primary and DB host name not using the DNS name
+                  if [[ $(mongo --quiet --eval "db.isMaster().primary") != *mongo-svc* ]]; then
+                    cat << EOF > /tmp/mongo/mongoCmdUpdateHost.js
+                    cfg = rs.conf()
+                    cfg.members[0].host="mongo-0.mongo-svc:27017"
+                    cfg.members[0].priority=10
+                    rs.reconfig(cfg)
+              EOF
+                    echo "==> Running rs.reconfig(cfg)..." >> /tmp/mongo/mongoCmd.out
+                    mongo --quiet /tmp/mongo/mongoCmdUpdateHost.js >> /tmp/mongo/mongoCmd.out
+                    echo "==> Mongo replSet hostname updated" >> /tmp/mongo/mongoCmd.out
+                  fi
+
+                  # If Primary and tracker doesn't reflect Primary
+                  if [[ $(cat /tmp/mongo-tracker/master) != $HOSTNAME ]]; then
+                    echo "$HOSTNAME" > /tmp/mongo-tracker/master
+                  fi
+                else
+                  # If neither Primary nor Secondary
+                  if [[ $(mongo --quiet --eval "db.isMaster().secondary") == false ]]; then
+                    masterHost=$(cat /tmp/mongo-tracker/master)
+                    echo "==> Connecting to MongoDB Master and add self as Secondary..." >> /tmp/mongo/mongoCmd.out
+                    mongo $masterHost.mongo-svc:27017 --quiet --eval "rs.add(\"$HOSTNAME.mongo-svc:27017\")" >> /tmp/mongo/mongoCmd.out
+                  fi
+                fi
+                sleep 10
+              done 
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp/mongo
+            - name: mongo-master-tracker
+              mountPath: /tmp/mongo-tracker
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: config-map
+        configMap:
+          name: mongo
+      - name: mongo-master-tracker
+        persistentVolumeClaim:
+          claimName: mongo-master-tracker-pvc
+
+  volumeClaimTemplates:
+  - metadata:
+      name: mongo-persistent-storage
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: mongodb-storage
+      resources:
+        requests:
+          storage: 1Gi
+

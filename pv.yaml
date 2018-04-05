@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mongodb-data1-nfs-prd3
+  labels:
+    usage: mongodb
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: mongodb-storage
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+  nfs:
+    path: /exports/mongodb-data1
+    server: stlrtltrn-prd3
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mongodb-data2-nfs-prd3
+  labels:
+    usage: mongodb
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: mongodb-storage
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+  nfs:
+    path: /exports/mongodb-data2
+    server: stlrtltrn-prd3
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mongodb-data3-nfs-prd3
+  labels:
+    usage: mongodb
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: mongodb-storage
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+  nfs:
+    path: /exports/mongodb-data3
+    server: stlrtltrn-prd3
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mongodb-master-tracker-nfs-prd3
+  labels:
+    usage: mongodb
+spec:
+  capacity:
+    storage: 1Ki
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: mongodb-storage
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+  nfs:
+    path: /exports/mongo-master-tracker
+    server: stlrtltrn-prd3
